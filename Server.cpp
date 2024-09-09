@@ -1,98 +1,110 @@
-#include <iostream>
-#include <cstring>
-#include <pthread.h>  // For multithreading
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <unistd.h>
+#include "server.h"
 
-// Exercise 6 Data Class
-class Data {
-public:
-    int health;
-    char name[50];
-};
+Server::Server(int server_port) : Comms(), listen_sock(-1) {
+    try {
+        cout << "[INFO] Starting server..." << endl;
+        // Creating a listening socket
+        listen_sock = socket(AF_INET, SOCK_STREAM, 0); // Same socket type as Client
+        if (listen_sock < 0) {
+            throw runtime_error("[ERROR] Server socket creation failed! :()");
+        }
+        cout << "[INFO] Listening socket created! Socket: " << listen_sock << endl;
 
-// Exercise 5: Thread function for handling client connection (messages)
-void* handle_client(void* socket_desc) {
-    int client_sock = *(int*)socket_desc;
-    char buffer[1024] = {0};
-    const char* confirmation = "Message Received";
+        // setting socket options to reuse the address to prevent restart errors
+        int opt = 1;
+        if (setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+            throw runtime_error("[ERROR] setsockopt failed.");
+        }
+        cout << "[INFO] Socket options set succeffully" << endl;
 
-    while (true) {
-        read(client_sock, buffer, 1024);
-        std::cout << "Message from client: " << buffer << std::endl;
+        // Setting up the server address
+        struct sockaddr_in server_addr;
+        memset(&server_addr, 0, sizeof(server_addr)); // zeroing address
+        server_addr.sin_family = AF_INET; // IPv4
+        server_addr.sin_addr.s_addr = INADDR_ANY;  // binding to any available network interface
+        server_addr.sin_port = htons(server_port); // htons used for byte order management
 
-        if (strcmp(buffer, "SHUTDOWN") == 0) break;
+        // binding the server socket to the address and port
+        cout << "[INFO] Binding to port " << server_port << "..." << endl;
+        if (bind(listen_sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+            throw runtime_error("[ERROR] Bind failed..");
+        }
+        cout << "[INFO] Bind successful" << endl;
 
-        // Exercise 2: Send confirmation
-        send(client_sock, confirmation, strlen(confirmation), 0);
+        // listening for incoming connections (up to 5)
+        if (listen(listen_sock, 5) < 0) {
+            throw runtime_error("[ERROR] Listen failed");
+        }
+        cout << "[INFO] Server listening for incoming connections on port " << server_port << "..." << endl;
+    } catch (const exception& e) {
+        cerr << e.what() << endl;
+        if (listen_sock != -1) {
+            close(listen_sock);
+        }
+        throw;  // re-throwing so it is sent up the stack
     }
-
-    close(client_sock);
-    return 0;
 }
 
-// Exercise 6: Thread function to send Data object
-void* send_data(void* socket_desc) {
-    int client_sock = *(int*)socket_desc;
-    Data data = { 100, "Player1" };
+void Server::run() {
+    try {
+        cout << "[INFO] Waiting for a client to connect..." << endl;
+        struct sockaddr_in client_addr;
+        socklen_t client_addr_size = sizeof(client_addr);
+        int client_sock = accept(listen_sock, (struct sockaddr*)&client_addr, &client_addr_size); // accept waits for client to connect and returns socket of connection
+        if (client_sock < 0) {
+            throw runtime_error("[ERROR] Client accept fail");
+        }
+        cout << "[INFO] Client connected. Socket: " << client_sock << endl;
 
-    while (true) {
-        data.health++;  // Increment health each second
-        send(client_sock, &data, sizeof(data), 0);
-        sleep(1);  // Send data every second
+        // Assigning client socket to 'sock' in Comms
+        sock = client_sock;
+
+        string client_ip = inet_ntoa(client_addr.sin_addr); // converting to a readbale format
+        int client_port = ntohs(client_addr.sin_port);
+        cout << "[INFO] Client IP: " << client_ip << ", Port: " << client_port << endl;
+
+        // Communication loop
+        string message;
+        while (true) {
+            message = receive_message();
+
+            if (message == "QUIT") {
+                cout << "[INFO] Client sent quit request. Closing connection..." << endl;
+                break;
+            }
+
+            cout << "Client: " << message << endl;
+
+            // Prompting the server to enter a response
+            cout << "Enter message: ";
+            getline(cin, message);
+
+            if (message.empty()) {
+                cout << "[ERROR] Message cant be empty. Please try again!" << endl;
+                continue;
+            }
+
+            // Send the response to the client
+            send_message(message);
+        }
+
+        // Close the client socket
+        close_socket();
+        cout << "[INFO] Client connection closed." << endl;
+
+        // Close the listening socket
+        if (listen_sock != -1) {
+            cout << "[INFO] Closing listening socket" << endl;
+            close(listen_sock);
+            listen_sock = -1;
+        }
+    } catch (const exception& e) {
+        cerr << e.what() << endl;
+        if (sock != -1) {
+            close_socket();
+        }
+        if (listen_sock != -1) {
+            close(listen_sock);
+        }
     }
-
-    close(client_sock);
-    return 0;
-}
-
-int main() {
-    int server_sock, client_sock;
-    struct sockaddr_in server_addr, client_addr;
-    socklen_t addr_size;
-
-    // Create socket
-    server_sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_sock < 0) {
-        std::cerr << "Socket creation failed." << std::endl;
-        return -1;
-    }
-
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(8080);
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-
-    // Bind socket
-    if (bind(server_sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-        std::cerr << "Bind failed." << std::endl;
-        return -1;
-    }
-
-    // Listen for incoming connections
-    if (listen(server_sock, 5) < 0) {
-        std::cerr << "Listen failed." << std::endl;
-        return -1;
-    }
-
-    std::cout << "Waiting for connections..." << std::endl;
-
-    // Exercise 1-5: Accept and handle multiple clients with threads
-    while (true) {
-        addr_size = sizeof(client_addr);
-        client_sock = accept(server_sock, (struct sockaddr *)&client_addr, &addr_size);
-
-        // Exercise 5: Create thread for each client connection (message handling)
-        // pthread_t client_thread;
-        // pthread_create(&client_thread, NULL, handle_client, (void*)&client_sock);
-        // pthread_detach(client_thread);  // Detach to avoid memory leaks
-
-        // Exercise 6: Create thread to send Data object
-        pthread_t data_thread;
-        pthread_create(&data_thread, NULL, send_data, (void*)&client_sock);
-        pthread_detach(data_thread);
-    }
-
-    close(server_sock);
-    return 0;
 }
