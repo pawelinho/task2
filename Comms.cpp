@@ -1,5 +1,3 @@
-// comms.cpp: Implements the Comms class methods.
-
 #include "comms.h"
 
 Comms::Comms() : sock(-1) { // initialising with -1 to start with an invalid socket
